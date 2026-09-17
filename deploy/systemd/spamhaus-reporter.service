@@ -1,0 +1,47 @@
+[Unit]
+Description=Cloudflare Security Events to Spamhaus reporter
+Documentation=https://submit.spamhaus.org/api/
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/spamhaus-reporter/config.yaml
+ConditionPathExists=/etc/spamhaus-reporter/.env
+
+[Service]
+Type=oneshot
+User=spamhaus-reporter
+Group=spamhaus-reporter
+
+ExecStart=/opt/spamhaus-reporter/current/.venv/bin/spamhaus-reporter --config /etc/spamhaus-reporter/config.yaml run --auto-submit
+
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# systemd creates these persistent writable directories with the correct owner.
+StateDirectory=spamhaus-reporter
+StateDirectoryMode=0700
+LogsDirectory=spamhaus-reporter
+LogsDirectoryMode=0700
+
+# Harden the oneshot process. The application only needs outbound HTTPS, local
+# SQLite/log writes, and read-only access to its code/configuration.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+ReadOnlyPaths=/etc/spamhaus-reporter
+ReadWritePaths=/var/lib/spamhaus-reporter
+ReadWritePaths=/var/log/spamhaus-reporter
+
+TimeoutStartSec=5min

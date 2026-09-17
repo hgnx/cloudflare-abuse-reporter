@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Spamhaus reporter every 10 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/10:00
+AccuracySec=15s
+RandomizedDelaySec=15s
+Persistent=true
+Unit=spamhaus-reporter.service
+
+[Install]
+WantedBy=timers.target

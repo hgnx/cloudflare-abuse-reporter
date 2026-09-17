@@ -1,0 +1,125 @@
+# Cloudflare -> Spamhaus reporter
+# Copy this file to config.yaml for local/manual use, or use
+# deploy/config.production.yaml.example for the hardened systemd layout.
+#
+# Add or remove zones as needed. The application supports one or more zones.
+
+zones:
+  - name: example.com
+    zone_id: REPLACE_WITH_CLOUDFLARE_ZONE_ID_1
+  - name: example.net
+    zone_id: REPLACE_WITH_CLOUDFLARE_ZONE_ID_2
+  - name: example.org
+    zone_id: REPLACE_WITH_CLOUDFLARE_ZONE_ID_3
+
+cloudflare:
+  graphql_url: https://api.cloudflare.com/client/v4/graphql
+  actions: [block]
+  poll_minutes: 10
+  overlap_minutes: 3
+  bootstrap_minutes: 60
+  # Security Events retention depends on Cloudflare plan. 23h is a conservative
+  # default that stays inside the 24h Free/Pro retention window.
+  max_catchup_hours: 23
+  max_events_per_query: 5000
+  request_timeout_seconds: 30
+  max_retries: 3
+
+spamhaus:
+  base_url: https://submit.spamhaus.org/portal/api/v1
+  preferred_threat_type: attack
+  request_timeout_seconds: 30
+  max_get_retries: 3
+
+  # Local safety policy. Spamhaus documents HTTP/body status 208 for an already
+  # reported submission, but its public API docs do not promise a 24h reset.
+  # If Spamhaus still returns 208 after this local cooldown, the reporter backs
+  # off again instead of retrying repeatedly.
+  resubmit_cooldown_hours: 24
+  duplicate_backoff_hours: 24
+  definitive_error_backoff_hours: 24
+
+  # Spamhaus exposes up to 30 days of submission history. Only recent history
+  # needed for cooldown/idempotency is mirrored locally.
+  remote_reconcile_horizon_hours: 48
+  remote_history_page_items: 1000
+  remote_history_max_pages: 100
+
+  # Counts actual POST attempts, including timeouts, 208s and 400s.
+  max_post_attempts_per_24h: 25
+
+classification:
+  aggregation_window_minutes: 10
+  review_horizon_hours: 24
+
+  # KEEP FALSE until you have reviewed shadow-mode output on your own traffic.
+  auto_submit_enabled: false
+
+  # Only these READY categories may be auto-submitted. Categories that are more
+  # prone to false positives remain review-only by default.
+  auto_submit_categories:
+    - wordpress
+    - secrets_config
+    - source_control
+    - db_admin
+    - cloud_credentials
+    - webshell
+    - traversal_lfi
+    - generic_scan
+
+  thresholds:
+    wordpress: 4
+    secrets_config: 3
+    source_control: 2
+    db_admin: 3
+    backup_dump: 3
+    cloud_credentials: 2
+    api_debug: 4
+    webshell: 2
+    traversal_lfi: 2
+    admin_login: 6
+    generic_scan: 15
+
+  generic_scan_min_categories: 2
+  generic_scan_min_total_requests: 20
+
+  # Technology-agnostic directory enumeration. It can become READY but is not
+  # auto-submitted by default because its false-positive surface is wider.
+  directory_enum_min_unique_paths: 30
+  directory_enum_min_total_requests: 40
+  directory_enum_max_window_seconds: 600
+
+  # Private/special-use networks are ignored by default.
+  allowlist_cidrs:
+    - 127.0.0.0/8
+    - ::1/128
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+    - fe80::/10
+    - fc00::/7
+
+  # Optional organization-specific exclusions.
+  allowlist_asns: []
+  # User-Agent strings are spoofable. Use this only when you accept that risk.
+  allowlist_user_agent_regexes: []
+
+storage:
+  sqlite_path: ./spamhaus_reporter.sqlite3
+  log_path: ./spamhaus_reporter.log
+  lock_path: ./spamhaus_reporter.lock
+
+  # Rolling retention: no permanent IP ledger.
+  event_retention_hours: 36
+  submission_attempt_retention_hours: 72
+  unknown_attempt_retention_hours: 72
+
+  # Crash recovery.
+  claimed_stale_minutes: 30
+  sending_stale_minutes: 30
+
+  # Rotating file logs: roughly 15 MB max with these defaults.
+  log_max_bytes: 5000000
+  log_backup_count: 3
