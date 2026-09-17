@@ -149,6 +149,112 @@ Use the narrowest zone scope that works for your deployment. Cloudflare document
 - Security Events limits: https://developers.cloudflare.com/waf/analytics/security-events/
 - Sampling: https://developers.cloudflare.com/analytics/graphql-api/sampling/
 
+### Recommended Cloudflare Security Rule
+
+The reporter does **not** require one particular Cloudflare Custom Rule. By default, however, the configuration contains:
+
+```yaml
+cloudflare:
+  actions: [block]
+```
+
+This means the collector asks `firewallEventsAdaptive` for Security Events whose terminating action is `block`. A block can come from a Custom Rule or another Cloudflare security feature. The reporter then applies its own path-based aggregation and classification logic; a Cloudflare block by itself is **not** enough to make an IP `READY`.
+
+For sites that do not intentionally expose the paths below, a dedicated Custom Rule is a useful way to make obvious reconnaissance generate deterministic `block` events. In the Cloudflare dashboard, go to **Security → Security rules → Create rule → Custom rules**, choose **Edit expression**, enter an expression, and set **Then take action → Block**.
+
+A conservative example that is reasonably aligned with the default classifier is:
+
+```text
+(http.request.uri.path wildcard "*/.env*") or
+(http.request.uri.path wildcard "*/.git*") or
+(http.request.uri.path wildcard "*/.svn*") or
+(http.request.uri.path wildcard "*/.hg*") or
+(http.request.uri.path wildcard "*/.bzr*") or
+(http.request.uri.path wildcard "*/xmlrpc.php*") or
+(http.request.uri.path wildcard "*/wp-login.php*") or
+(http.request.uri.path wildcard "*/wp-admin*") or
+(http.request.uri.path wildcard "*/wp-includes*") or
+(http.request.uri.path wildcard "*/wp-content*") or
+(http.request.uri.path wildcard "*/phpmyadmin*") or
+(http.request.uri.path wildcard "*/pma/*") or
+(http.request.uri.path wildcard "*/adminer.php*") or
+(http.request.uri.path wildcard "*/mysqladmin*") or
+(http.request.uri.path wildcard "*/.aws/credentials*") or
+(http.request.uri.path wildcard "*/service-account.json*") or
+(http.request.uri.path wildcard "*/service_account.json*") or
+(http.request.uri.path wildcard "*/amplifyconfiguration.json*") or
+(http.request.uri.path wildcard "*/firebase.json*") or
+(http.request.uri.path wildcard "*/google-services.json*") or
+(http.request.uri.path wildcard "*/id_rsa*") or
+(http.request.uri.path wildcard "*/id_dsa*") or
+(http.request.uri.path wildcard "*/id_ecdsa*") or
+(http.request.uri.path wildcard "*/id_ed25519*") or
+(http.request.uri.path wildcard "*/wso.php*") or
+(http.request.uri.path wildcard "*/alfa.php*") or
+(http.request.uri.path wildcard "*/shell.php*") or
+(http.request.uri.path wildcard "*/cmd.php*") or
+(http.request.uri.path wildcard "*/c99.php*") or
+(http.request.uri.path wildcard "*/r57.php*") or
+(http.request.uri.path wildcard "*/b374k.php*") or
+(http.request.uri.path wildcard "*/filesman.php*")
+```
+
+Cloudflare's `wildcard` operator is case-insensitive and matches the entire field value; leading and trailing `*` characters make the examples above behave like case-insensitive substring matches on `http.request.uri.path`. `http.request.uri.path` does not include the query string.
+
+#### Optional environment-specific extensions
+
+The following paths are often worth blocking on sites that **do not actually use them**, but they have a larger legitimate-use surface. Do not copy them blindly into a shared rule:
+
+```text
+(http.request.uri.path wildcard "*/vendor/phpunit*") or
+(http.request.uri.path wildcard "*/actuator*") or
+(http.request.uri.path wildcard "*/swagger*") or
+(http.request.uri.path wildcard "*/api-docs*") or
+(http.request.uri.path wildcard "*/openapi.json*") or
+(http.request.uri.path wildcard "*/debug*") or
+(http.request.uri.path wildcard "*/server-status*") or
+(http.request.uri.path wildcard "*/server-info*") or
+(http.request.uri.path wildcard "*/phpinfo*") or
+(http.request.uri.path wildcard "*/graphql*") or
+(http.request.uri.path wildcard "*/.ssh*") or
+(http.request.uri.path wildcard "*/config.json*") or
+(http.request.uri.path wildcard "*/config.js*") or
+(http.request.uri.path wildcard "*/settings.js*")
+```
+
+In particular, `/graphql`, `/swagger`, `/openapi.json`, `/config.js`, and `/settings.js` can be normal application endpoints/files. WordPress paths are also normal on a real WordPress site. Only block paths that are invalid for the application you are protecting.
+
+You may separately choose to block unusual HTTP methods on an ordinary website, for example:
+
+```text
+http.request.method in {"TRACE" "CONNECT" "TRACK"}
+```
+
+That is useful WAF hardening, but **version 1.2.0 does not use the HTTP method itself as a classification signal**. A method-only block therefore does not, by itself, make an IP reportable by this project.
+
+Similarly, some paths in the optional example (for example `vendor/phpunit`, `server-info`, or `phpinfo`) are not dedicated default classifier categories. They may contribute to broader/directory-enumeration evidence, but the Cloudflare rule and the reporter classifier are intentionally not treated as a one-to-one mapping.
+
+If you maintain trusted source IPs, health-check systems, or internal scanners, exclude them in Cloudflare and/or add them to the reporter's `allowlist_cidrs`. Do not rely on User-Agent strings for trust because they are attacker-controlled.
+
+A stricter expression can also be scoped to specific hostnames when one zone contains applications with different route sets. For example:
+
+```text
+(http.host eq "www.example.com") and (
+  (http.request.uri.path wildcard "*/.env*") or
+  (http.request.uri.path wildcard "*/.git*") or
+  (http.request.uri.path wildcard "*/xmlrpc.php*")
+)
+```
+
+The reporter is **not tied to the ID or name of this example rule**. With the default `actions: [block]`, it can ingest any matching Cloudflare Security Event whose action is `block`, and its own thresholds decide whether the source becomes `IGNORE`, `REVIEW`, or `READY`. This is deliberate: existing Managed Rules or other Custom Rules can provide useful evidence too.
+
+Cloudflare documentation for these rule mechanics:
+
+- Custom Rules: https://developers.cloudflare.com/waf/custom-rules/
+- Create a Custom Rule: https://developers.cloudflare.com/waf/custom-rules/create-dashboard/
+- Rules language operators (`wildcard`, `in`, grouping): https://developers.cloudflare.com/ruleset-engine/rules-language/operators/
+- URI path field: https://developers.cloudflare.com/ruleset-engine/rules-language/fields/reference/http.request.uri.path/
+
 ### Cloudflare retention and sampling
 
 `firewallEventsAdaptive` is an adaptive analytics dataset. Cloudflare documents plan-dependent retention and adaptive sampling under load. A narrower time range can reduce sampling, but this application cannot reconstruct events that Cloudflare did not return. This limitation primarily creates **missed evidence**, not fabricated evidence.

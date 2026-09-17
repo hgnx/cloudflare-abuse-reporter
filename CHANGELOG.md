@@ -18,6 +18,7 @@
 - Excluded remote-history-only rows from the local 24-hour POST-attempt cap.
 - Added validation that the configured remote reconciliation horizon cannot exceed Spamhaus' documented 30-day history window.
 - Added GitHub Actions CI, a security policy, and a substantially expanded deployment/operations README.
+- Documented the default `actions: [block]` collection semantics and added conservative/optional Cloudflare Custom Rule examples for generating relevant blocked Security Events.
 
 ## 1.1.0
 

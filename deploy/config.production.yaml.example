@@ -11,6 +11,10 @@ zones:
 
 cloudflare:
   graphql_url: https://api.cloudflare.com/client/v4/graphql
+  # Only Security Events with these terminating actions are collected. The
+  # default `block` value is not tied to one particular Custom Rule: blocked
+  # events from eligible Cloudflare security sources can be ingested, after
+  # which the reporter applies its own conservative classification thresholds.
   actions: [block]
   poll_minutes: 10
   overlap_minutes: 3
