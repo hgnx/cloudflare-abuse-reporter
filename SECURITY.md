@@ -27,3 +27,5 @@ This software is intended to run with:
 - automatic submission disabled until shadow-mode output has been reviewed.
 
 The project does not attempt to make attacker-controlled request paths or User-Agent strings trustworthy. They are treated as untrusted input and sanitized before inclusion in logs or submission reasons/comments.
+
+Outbound report payloads omit protected target hostnames by default (`privacy.include_target_host: false`). Local operator logs and `review` output may still contain hostnames and should be handled as operationally sensitive data.

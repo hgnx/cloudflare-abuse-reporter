@@ -1,10 +1,10 @@
-# Cloudflare → Spamhaus + AbuseIPDB Reporter
+# Cloudflare Abuse Reporter
 
 A conservative, production-hardened Python service that reads blocked Cloudflare Security Events, classifies repeated web reconnaissance, and can report high-confidence source IPs to **Spamhaus Threat Intel Community** and **AbuseIPDB**.
 
 > **Important:** This project is not affiliated with, endorsed by, or sponsored by Cloudflare, Spamhaus, or AbuseIPDB. Automated abuse reporting has real consequences. Use it only for activity directly observed on infrastructure you control, review each provider's reporting policy, and run in shadow mode before enabling automatic submissions.
 
-Current release: **1.3.0**
+Current release: **1.3.1**
 
 ## What this project does
 
@@ -112,7 +112,7 @@ For an IP submission, the Spamhaus backend sends:
 }
 ```
 
-The generated reason may contain the target hostname and a short list of suspicious requested paths. It is sanitized to printable ASCII and capped at 255 bytes/characters.
+By default, the generated reason **does not include the protected hostname**. It describes the observed behavior as targeting a web application under the operator's control and may include a short list of suspicious requested paths. This minimizes unnecessary victim-infrastructure disclosure to the reporting provider. Set `privacy.include_target_host: true` only if you intentionally want the target hostname included. The reason is sanitized to printable ASCII and capped at 255 bytes/characters.
 
 ## Data sent to AbuseIPDB
 
@@ -125,7 +125,16 @@ comment=<observed behavior summary>
 timestamp=<earliest observation in the candidate window>
 ```
 
-The comment is generated from observed Cloudflare evidence, sanitized to printable ASCII, and capped below AbuseIPDB's documented 1024-byte comment limit. It may contain the target hostname and representative suspicious paths.
+The comment is generated from observed Cloudflare evidence, sanitized to printable ASCII, and capped below AbuseIPDB's documented 1024-byte comment limit. **The protected hostname is omitted by default** because AbuseIPDB report comments can be visible to other users. Representative suspicious paths are retained by default because they describe the observed behavior without directly naming the protected host.
+
+To opt in to hostname disclosure for both reporting backends:
+
+```yaml
+privacy:
+  include_target_host: true
+```
+
+The production default is `false`. Local `review` output and local logs may still show the hostname for operator troubleshooting; the privacy switch controls the outbound Spamhaus reason and AbuseIPDB comment payloads.
 
 The reporter does **not** query or transmit request bodies, cookies, authorization headers, application response bodies, or Cloudflare account credentials to either reporting provider.
 
@@ -286,7 +295,7 @@ You may separately choose to block unusual HTTP methods on an ordinary website, 
 http.request.method in {"TRACE" "CONNECT" "TRACK"}
 ```
 
-That is useful WAF hardening, but **version 1.3.0 does not use the HTTP method itself as a classification signal**. A method-only block therefore does not, by itself, make an IP reportable by this project.
+That is useful WAF hardening, but **version 1.3.1 does not use the HTTP method itself as a classification signal**. A method-only block therefore does not, by itself, make an IP reportable by this project.
 
 Some optional paths such as `vendor/phpunit`, `server-info`, and `phpinfo` are classified under the broader `api_debug` family. The Cloudflare rule and reporter classifier are still intentionally not treated as a one-to-one mapping: Cloudflare decides whether to block a request, while the reporter independently aggregates evidence and applies thresholds.
 
@@ -378,6 +387,23 @@ abuseipdb:
 `setup-check` uses AbuseIPDB's read-only `CHECK` endpoint to validate API authentication without creating a report. This does **not** prove reporting privilege by itself; reporting privilege is ultimately exercised by the first real REPORT request.
 
 The project does not use the community `reports` endpoint as a substitute for a private per-account submission ledger. AbuseIPDB duplicate protection therefore relies on the local rolling SQLite state plus the provider's own API limits.
+
+### Report-payload privacy
+
+Version 1.3.1 defaults to hostname redaction for **both** Spamhaus and AbuseIPDB payloads:
+
+```yaml
+privacy:
+  include_target_host: false
+```
+
+With the default, outbound wording looks like:
+
+```text
+Observed WordPress/CMS reconnaissance against a web application under my control. Representative paths: /wp-includes/wlwmanifest.xml, /xmlrpc.php. 6 blocked requests in a short window. Observed directly in Cloudflare Security Events on infrastructure under my control.
+```
+
+The source IP, timestamps, categories, request counts, and representative suspicious paths remain available to support the report, while the protected hostname is not sent. This setting does not redact local operator logs or `review` output.
 
 ## Repository layout
 
@@ -495,8 +521,8 @@ sudo apt install -y python3 python3-venv ca-certificates sqlite3 git
 For example:
 
 ```bash
-git clone <your-repository-url> cloudflare-spamhaus-reporter
-cd cloudflare-spamhaus-reporter
+git clone https://github.com/hgnx/cloudflare-abuse-reporter.git cloudflare-abuse-reporter
+cd cloudflare-abuse-reporter
 ```
 
 ### 3. Run the production installer
@@ -504,6 +530,22 @@ cd cloudflare-spamhaus-reporter
 ```bash
 sudo ./deploy/install.sh
 ```
+
+The repository tracks `deploy/install.sh` as executable (`100755` in Git). If an archive extraction or cross-platform copy strips the executable bit, verify and restore it before installation:
+
+```bash
+ls -l deploy/install.sh
+chmod 0755 deploy/install.sh
+```
+
+Repository maintainers can verify the Git mode with:
+
+```bash
+git ls-files -s deploy/install.sh
+# expected prefix: 100755
+```
+
+CI also fails if the installer is not executable, preventing this regression from being published unnoticed.
 
 The installer:
 
@@ -543,7 +585,7 @@ root:spamhaus-reporter 0640 /etc/spamhaus-reporter/config.yaml
 root:spamhaus-reporter 0750 /etc/spamhaus-reporter
 ```
 
-This lets root modify secrets while the service account has read-only access. Version 1.3.0 treats restricted `0640` as valid; it warns only when group write/execute or any `other` permissions are present. A user-owned `0600` `.env` is also valid for non-systemd/manual deployments.
+This lets root modify secrets while the service account has read-only access. Version 1.3.1 treats restricted `0640` as valid; it warns only when group write/execute or any `other` permissions are present. A user-owned `0600` `.env` is also valid for non-systemd/manual deployments.
 
 Reassert permissions if needed:
 
@@ -590,6 +632,13 @@ abuseipdb:
 ```
 
 The complete category map is already present in the production example.
+
+Keep target hostnames out of third-party report payloads unless you explicitly need them:
+
+```yaml
+privacy:
+  include_target_host: false
+```
 
 Keep:
 
@@ -1065,7 +1114,7 @@ Do not make the file world-readable merely to simplify inspection.
 
 ### `.env permissions are 640` warning
 
-Version 1.3.0 retains the corrected permission logic. Restricted `0640` is valid in the recommended root-owned/service-group deployment. If you still see this warning, verify the mode with:
+Version 1.3.1 retains the corrected permission logic. Restricted `0640` is valid in the recommended root-owned/service-group deployment. If you still see this warning, verify the mode with:
 
 ```bash
 sudo stat -c '%U:%G %a %n' \
@@ -1181,7 +1230,7 @@ Then re-enable the timer if desired:
 sudo systemctl enable --now spamhaus-reporter.timer
 ```
 
-## Upgrade an existing v1.1/v1.2 production host to v1.3.0 and enable AbuseIPDB
+## Upgrade an existing v1.1/v1.2/v1.3.0 production host to v1.3.1
 
 This is the recommended **A-to-Z** path for a server that is already running the Spamhaus-only reporter under systemd.
 
@@ -1201,11 +1250,11 @@ sudo cp -a /etc/spamhaus-reporter/.env \
   "/etc/spamhaus-reporter/.env.backup.${STAMP}"
 ```
 
-You do **not** need to delete the existing SQLite database. v1.3.0 creates the new AbuseIPDB attempt table in the same database while preserving existing Cloudflare events, cursors, and Spamhaus state.
+You do **not** need to delete the existing SQLite database. v1.3.1 preserves the AbuseIPDB attempt table (creating it automatically when upgrading from pre-v1.3) in the same database while preserving existing Cloudflare events, cursors, and Spamhaus state.
 
 ### B. Install the new release
 
-From the checked-out/unpacked v1.3.0 repository:
+From the checked-out/unpacked v1.3.1 repository:
 
 ```bash
 sudo ./deploy/install.sh
@@ -1220,7 +1269,7 @@ readlink -f /opt/spamhaus-reporter/current
 Expected suffix:
 
 ```text
-/opt/spamhaus-reporter/releases/1.3.0
+/opt/spamhaus-reporter/releases/1.3.1
 ```
 
 The installer preserves existing `/etc/spamhaus-reporter/config.yaml` and `.env` files. Therefore an upgrade from an older release requires the next two manual edits.
@@ -1290,6 +1339,15 @@ abuseipdb:
     directory_enum: [21]
 ```
 
+Add the v1.3.1 privacy default (or verify it is already present):
+
+```yaml
+privacy:
+  include_target_host: false
+```
+
+This prevents protected hostnames from being sent in either Spamhaus reasons or AbuseIPDB comments. Local review output still shows hostnames.
+
 Temporarily set the existing global switch to:
 
 ```yaml
@@ -1311,7 +1369,7 @@ storage:
 ```bash
 sudo -u spamhaus-reporter \
   /opt/spamhaus-reporter/current/.venv/bin/python \
-  -c 'import yaml; c=yaml.safe_load(open("/etc/spamhaus-reporter/config.yaml")); assert c["abuseipdb"]["enabled"] is True; assert c["classification"]["auto_submit_enabled"] is False; print("YAML OK / AbuseIPDB enabled / auto-submit disabled")'
+  -c 'import yaml; c=yaml.safe_load(open("/etc/spamhaus-reporter/config.yaml")); assert c["abuseipdb"]["enabled"] is True; assert c["classification"]["auto_submit_enabled"] is False; assert c.get("privacy", {}).get("include_target_host", False) is False; print("YAML OK / AbuseIPDB enabled / hostname redaction enabled / auto-submit disabled")'
 ```
 
 ### F. Run the full setup check
@@ -1610,6 +1668,7 @@ GitHub Actions runs the suite across supported Python versions.
 - Use a local filesystem for SQLite; do not place the database on NFS or another network filesystem.
 - Treat `unknown` POST outcomes as ambiguous; never immediately retry them manually. Spamhaus can reconcile remote history, while AbuseIPDB relies on local cooldown state and provider-side limits.
 - Keep AbuseIPDB disabled until you have a valid API key and approved reporting privilege.
+- Keep `privacy.include_target_host: false` unless you intentionally want protected hostnames transmitted to reporting providers. AbuseIPDB report comments may be visible to other users.
 - Avoid User-Agent-only trust decisions.
 - Start with `auto_submit_enabled: false` on every new environment.
 

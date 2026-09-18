@@ -193,12 +193,32 @@ def _path_summary(paths: list[str], max_chars: int) -> str:
 
 
 def make_reason(
-    *, host: str, category: str, paths: list[str], unique_count: int, request_count: int
+    *,
+    host: str,
+    category: str,
+    paths: list[str],
+    unique_count: int,
+    request_count: int,
+    include_target_host: bool = False,
 ) -> str:
+    """Build a bounded Spamhaus reason from observed Cloudflare evidence.
+
+    Target hostnames are omitted by default because they are not required to
+    describe the source IP's behavior and can unnecessarily disclose operator
+    infrastructure to a third-party reporting provider. Operators can opt in
+    through ``privacy.include_target_host``.
+    """
     label = CATEGORY_LABELS.get(category, "automated web reconnaissance")
-    host = _reason_safe(host, 120)
-    prefix = f"Observed {label} against {host}. "
-    suffix = f" {unique_count} unique suspicious paths/{request_count} blocked requests in a short window; Cloudflare security logs under my control."
+    if include_target_host:
+        target = _reason_safe(host, 120) or "a web application under my control"
+    else:
+        target = "a web application under my control"
+
+    prefix = f"Observed {label} against {target}. "
+    suffix = (
+        f" {unique_count} unique suspicious paths/{request_count} blocked requests "
+        "in a short window; observed in Cloudflare Security Events."
+    )
     available = 255 - len(prefix) - len(suffix) - len("Paths: ")
     path_text = _path_summary(paths, max(0, available))
     if path_text:
@@ -210,8 +230,8 @@ def make_reason(
 
     # Deterministic fallback with no path list.
     reason = (
-        f"Observed {label} against {host}: {unique_count} unique suspicious paths / "
-        f"{request_count} blocked requests in a short window. Evidence from Cloudflare security logs under my control."
+        f"Observed {label} against {target}: {unique_count} unique suspicious paths / "
+        f"{request_count} blocked requests in a short window. Evidence from Cloudflare Security Events."
     )
     return reason[:255]
 
@@ -333,6 +353,7 @@ def build_candidate(rows: list[Any], config: dict[str, Any]) -> Candidate | None
         ),
         unique_count=unique_suspicious,
         request_count=request_count,
+        include_target_host=bool(config.get("include_target_host_in_reports", False)),
     )
 
     return Candidate(

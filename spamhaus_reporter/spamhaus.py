@@ -32,7 +32,7 @@ class SpamhausClient:
             {
                 "Authorization": f"Bearer {api_key}",
                 "Accept": "application/json",
-                "User-Agent": f"spamhaus-reporter/{__version__}",
+                "User-Agent": f"cloudflare-abuse-reporter/{__version__}",
             }
         )
 

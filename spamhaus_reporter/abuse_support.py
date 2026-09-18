@@ -40,10 +40,21 @@ def categories_for_candidate(candidate: Candidate, category_map: dict[str, Any] 
     return sorted(set(mapping.get(candidate.primary_category, [21])))
 
 
-def make_comment(candidate: Candidate, *, max_bytes: int = 1024) -> str:
-    """Build a concise, PII-minimized AbuseIPDB comment from observed evidence."""
+def make_comment(
+    candidate: Candidate, *, max_bytes: int = 1024, include_target_host: bool = False
+) -> str:
+    """Build a concise AbuseIPDB comment from observed evidence.
+
+    AbuseIPDB report comments can be visible to other users. The target hostname
+    is therefore omitted by default. This keeps the evidence useful while
+    avoiding an unnecessary source-IP-to-victim-host correlation.
+    """
     label = CATEGORY_LABELS.get(candidate.primary_category, "automated web reconnaissance")
-    host = _ascii_clean(candidate.host, 160)
+    if include_target_host:
+        target = _ascii_clean(candidate.host, 160) or "a web application under my control"
+    else:
+        target = "a web application under my control"
+
     paths: list[str] = []
     suspicious_paths = [p for finding in candidate.findings for p in finding.matched_paths]
     for path in suspicious_paths:
@@ -53,7 +64,7 @@ def make_comment(candidate: Candidate, *, max_bytes: int = 1024) -> str:
         if len(paths) >= 8:
             break
 
-    prefix = f"Observed {label} against {host}. "
+    prefix = f"Observed {label} against {target}. "
     suffix = (
         f" {candidate.request_count} blocked requests in a short window. "
         "Observed directly in Cloudflare Security Events on infrastructure under my control."

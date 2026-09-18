@@ -151,7 +151,7 @@ systemd-analyze verify \
 
 cat <<EOF
 
-Installed cloudflare-spamhaus-reporter $VERSION.
+Installed cloudflare-abuse-reporter $VERSION.
 
 The timer was NOT enabled and no report was submitted.
 $([[ "$EXISTING_TIMER_DISABLED" -eq 1 ]] && echo "An existing timer was disabled for safety and must be re-enabled after validation." || true)

@@ -94,7 +94,7 @@ def test_default_category_mapping_is_conservative():
     assert categories_for_candidate(c, {}) == [15, 21]
 
 
-def test_abuseipdb_comment_is_bounded_ascii():
+def test_abuseipdb_comment_is_bounded_ascii_and_redacts_host_by_default():
     c = candidate(datetime.now(timezone.utc))
     c.host = "example.com\nINJECT"
     c.unique_paths = ["/" + "x" * 400 for _ in range(8)]
@@ -102,6 +102,15 @@ def test_abuseipdb_comment_is_bounded_ascii():
     assert len(comment.encode("utf-8")) <= 1024
     assert "\n" not in comment
     assert all(ord(ch) < 128 for ch in comment)
+    assert "example.com" not in comment
+    assert "a web application under my control" in comment
+
+
+def test_abuseipdb_comment_can_include_target_host_when_opted_in():
+    c = candidate(datetime.now(timezone.utc))
+    c.host = "public.example.com"
+    comment = make_comment(c, include_target_host=True)
+    assert "public.example.com" in comment
 
 
 def test_abuseipdb_transport_error_is_not_retried(monkeypatch):

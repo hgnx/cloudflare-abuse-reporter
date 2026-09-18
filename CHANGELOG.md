@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.1 — Privacy defaults and repository rename cleanup
+
+- Renamed the Python distribution and public project branding to `cloudflare-abuse-reporter`.
+- Retained the legacy `spamhaus-reporter` CLI, Python module, systemd unit names, service account, and production paths for backward compatibility.
+- Added `privacy.include_target_host` with a secure default of `false`.
+- Removed protected hostnames from Spamhaus reasons and AbuseIPDB comments by default while keeping representative suspicious paths and counts.
+- Kept local `review`/logging visibility unchanged for operator troubleshooting.
+- Updated outbound User-Agent strings to `cloudflare-abuse-reporter/<version>`.
+- Updated README clone/install/upgrade guidance for the renamed repository.
+- Added CI enforcement that `deploy/install.sh` is executable.
+- Confirmed `deploy/install.sh` is shipped with mode `0755` / Git mode `100755`.
+
 ## 1.3.0 — AbuseIPDB dual-backend reporting
 
 - Added optional AbuseIPDB API v2 reporting alongside Spamhaus.

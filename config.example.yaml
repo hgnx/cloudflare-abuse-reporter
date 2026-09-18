@@ -1,4 +1,4 @@
-# Cloudflare -> Spamhaus + AbuseIPDB reporter
+# Cloudflare Abuse Reporter -> Spamhaus + AbuseIPDB
 # Copy this file to config.yaml for local/manual use, or use
 # deploy/config.production.yaml.example for the hardened systemd layout.
 #
@@ -84,6 +84,14 @@ abuseipdb:
     admin_login: [21]
     generic_scan: [21]
     directory_enum: [21]
+
+privacy:
+  # Report payloads omit the protected hostname by default. AbuseIPDB comments
+  # can be visible to other users, and Spamhaus does not need the victim hostname
+  # to describe the observed source-IP behavior. Local review/log output still
+  # contains the hostname for operator troubleshooting. Set true only if you
+  # intentionally want target hostnames sent to reporting providers.
+  include_target_host: false
 
 classification:
   aggregation_window_minutes: 10

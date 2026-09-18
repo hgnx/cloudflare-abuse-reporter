@@ -94,3 +94,12 @@ def test_abuseipdb_cooldown_cannot_be_under_15_minutes(tmp_path, monkeypatch):
     p = write_cfg(tmp_path, extra="\nabuseipdb:\n  enabled: false\n  resubmit_cooldown_hours: 0.1\n")
     with pytest.raises(ConfigError, match="15 minutes"):
         load_settings(p)
+
+
+def test_privacy_include_target_host_must_be_boolean(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPAMHAUS_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    p = write_cfg(tmp_path, extra='\nprivacy:\n  include_target_host: "false"\n')
+    with pytest.raises(ConfigError, match="privacy.include_target_host"):
+        load_settings(p)

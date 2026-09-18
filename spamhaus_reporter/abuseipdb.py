@@ -39,7 +39,7 @@ class AbuseIPDBClient:
             {
                 "Key": api_key,
                 "Accept": "application/json",
-                "User-Agent": f"cloudflare-spamhaus-reporter/{__version__}",
+                "User-Agent": f"cloudflare-abuse-reporter/{__version__}",
             }
         )
 

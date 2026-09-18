@@ -231,9 +231,11 @@ def recent_candidates(settings: Settings) -> list[Candidate]:
     db = _db(settings)
     horizon = int(get(settings.raw, "classification.review_horizon_hours", 24))
     since = datetime.now(timezone.utc) - timedelta(hours=horizon)
-    return candidates_from_rows(
-        db.events_since(since.isoformat()), get(settings.raw, "classification", {}) or {}
+    classifier_config = dict(get(settings.raw, "classification", {}) or {})
+    classifier_config["include_target_host_in_reports"] = bool(
+        get(settings.raw, "privacy.include_target_host", False)
     )
+    return candidates_from_rows(db.events_since(since.isoformat()), classifier_config)
 
 
 def _fmt_list(values: Iterable[object], limit: int = 5) -> str:
@@ -522,7 +524,9 @@ def submit_abuseipdb_ready(settings: Settings, *, actually_send: bool) -> int:
         print(f"DRY RUN (AbuseIPDB): {len(eligible)} eligible candidate(s).")
         for c in eligible:
             categories = categories_for_candidate(c, category_map)
-            comment = make_comment(c)
+            comment = make_comment(
+                c, include_target_host=bool(get(settings.raw, "privacy.include_target_host", False))
+            )
             print(f"  {c.ip} | categories={','.join(map(str, categories))} | {c.primary_category} | {comment}")
         return 0
 
@@ -540,7 +544,9 @@ def submit_abuseipdb_ready(settings: Settings, *, actually_send: bool) -> int:
     posted = 0
     for c in eligible[:remaining]:
         categories = categories_for_candidate(c, category_map)
-        comment = make_comment(c)
+        comment = make_comment(
+            c, include_target_host=bool(get(settings.raw, "privacy.include_target_host", False))
+        )
         if len(comment.encode("utf-8")) > 1024:
             LOG.error("%s skipped: generated AbuseIPDB comment exceeds 1024-byte cap", c.ip)
             continue

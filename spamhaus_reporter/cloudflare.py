@@ -69,7 +69,7 @@ class CloudflareClient:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "User-Agent": f"spamhaus-reporter/{__version__}",
+                "User-Agent": f"cloudflare-abuse-reporter/{__version__}",
             }
         )
 

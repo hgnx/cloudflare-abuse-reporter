@@ -112,6 +112,10 @@ def load_settings(config_path: str | Path = "config.yaml") -> Settings:
     if abuse_enabled and (not abuseipdb_key or abuseipdb_key.lower() == "replace_me"):
         raise ConfigError("ABUSEIPDB_API_KEY is missing from environment/.env while abuseipdb.enabled is true")
 
+    include_target_host = get(raw, "privacy.include_target_host", False)
+    if not isinstance(include_target_host, bool):
+        raise ConfigError("privacy.include_target_host must be true or false, not a string")
+
     _positive_int(raw, "cloudflare.poll_minutes", 10)
     _positive_int(raw, "cloudflare.overlap_minutes", 3)
     _positive_int(raw, "cloudflare.bootstrap_minutes", 60)
