@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloudflare-spamhaus-reporter"
-version = "1.2.0"
-description = "Conservative Cloudflare Security Events to Spamhaus IP reporting automation"
+version = "1.3.0"
+description = "Conservative Cloudflare Security Events to Spamhaus and AbuseIPDB reporting automation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -19,6 +19,7 @@ dev = ["pytest==9.0.2"]
 
 [project.scripts]
 spamhaus-reporter = "spamhaus_reporter.cli:main"
+cloudflare-abuse-reporter = "spamhaus_reporter.cli:main"
 
 [tool.setuptools]
 packages = ["spamhaus_reporter"]

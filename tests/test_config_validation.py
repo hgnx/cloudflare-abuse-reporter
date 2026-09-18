@@ -43,13 +43,14 @@ storage:
 """
     p = tmp_path / "config.yaml"
     p.write_text(text)
-    (tmp_path / ".env").write_text("SPAMHAUS_API_KEY=x\nCLOUDFLARE_API_TOKEN=y\n")
+    (tmp_path / ".env").write_text("SPAMHAUS_API_KEY=x\nCLOUDFLARE_API_TOKEN=y\nABUSEIPDB_API_KEY=z\n")
     return p
 
 
 def test_good_config_loads(tmp_path, monkeypatch):
     monkeypatch.delenv("SPAMHAUS_API_KEY", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
     s = load_settings(write_cfg(tmp_path))
     assert s.zones[0].name == "example.com"
 
@@ -57,6 +58,7 @@ def test_good_config_loads(tmp_path, monkeypatch):
 def test_event_retention_cannot_be_shorter_than_review_horizon(tmp_path, monkeypatch):
     monkeypatch.delenv("SPAMHAUS_API_KEY", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
     p = write_cfg(tmp_path)
     text = p.read_text().replace("event_retention_hours: 48", "event_retention_hours: 12")
     p.write_text(text)
@@ -67,8 +69,28 @@ def test_event_retention_cannot_be_shorter_than_review_horizon(tmp_path, monkeyp
 def test_remote_reconcile_horizon_cannot_exceed_spamhaus_history_window(tmp_path, monkeypatch):
     monkeypatch.delenv("SPAMHAUS_API_KEY", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
     p = write_cfg(tmp_path)
     text = p.read_text().replace("remote_reconcile_horizon_hours: 48", "remote_reconcile_horizon_hours: 721")
     p.write_text(text)
     with pytest.raises(ConfigError, match="<= 720"):
+        load_settings(p)
+
+
+def test_abuseipdb_enabled_requires_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPAMHAUS_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    p = write_cfg(tmp_path, extra="\nabuseipdb:\n  enabled: true\n")
+    (tmp_path / ".env").write_text("SPAMHAUS_API_KEY=x\nCLOUDFLARE_API_TOKEN=y\n")
+    with pytest.raises(ConfigError, match="ABUSEIPDB_API_KEY"):
+        load_settings(p)
+
+
+def test_abuseipdb_cooldown_cannot_be_under_15_minutes(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPAMHAUS_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    p = write_cfg(tmp_path, extra="\nabuseipdb:\n  enabled: false\n  resubmit_cooldown_hours: 0.1\n")
+    with pytest.raises(ConfigError, match="15 minutes"):
         load_settings(p)

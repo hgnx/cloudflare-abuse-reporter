@@ -39,6 +39,7 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         re.compile(r"(?:^|/)(?:key|keys|secret|secrets|credentials|config|configuration)\.(?:json|ya?ml|ini|toml)(?:$|[?])", re.I),
         re.compile(r"(?:^|/)id_(?:rsa|dsa|ecdsa|ed25519)(?:$|[.?/])", re.I),
         re.compile(r"(?:^|/)\.npmrc(?:$|[?])", re.I),
+        re.compile(r"(?:^|/)\.ssh(?:/|$)", re.I),
     ],
     "source_control": [
         re.compile(r"(?:^|/)\.git(?:/|$)", re.I),
@@ -71,6 +72,9 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         re.compile(r"(?:^|/)debug(?:/|$)", re.I),
         re.compile(r"(?:^|/)graphql(?:/|$)", re.I),
         re.compile(r"(?:^|/)server-status(?:$|[/?])", re.I),
+        re.compile(r"(?:^|/)server-info(?:$|[/?])", re.I),
+        re.compile(r"(?:^|/)phpinfo(?:\.php)?(?:$|[/?])", re.I),
+        re.compile(r"(?:^|/)vendor/phpunit(?:/|$)", re.I),
     ],
     "webshell": [
         re.compile(r"(?:^|/)(?:wso|alfa|shell|cmd|c99|r57|b374k|filesman)\.php(?:$|[?])", re.I),

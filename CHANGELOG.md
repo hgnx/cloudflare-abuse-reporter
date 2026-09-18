@@ -1,35 +1,28 @@
 # Changelog
 
-## 1.2.0
+## 1.3.0 — AbuseIPDB dual-backend reporting
 
-- Hardened the public production deployment layout.
-- Moved the recommended production process lock from `/run/spamhaus-reporter` to `/var/lib/spamhaus-reporter/reporter.lock` so manual CLI commands and systemd oneshot runs share a stable writable directory.
-- Replaced the old `.env` permission warning with logic that accepts both user-owned `0600` and restricted root-owned/service-group `0640` deployments.
-- Replaced the example systemd unit with a dedicated `spamhaus-reporter` service account, strict read-only filesystem protection, bounded writable paths, and a persistent ten-minute timer.
-- Added an idempotent-oriented production installer that creates versioned releases under `/opt/spamhaus-reporter/releases/`, installs `setuptools>=68` before package installation, and leaves auto-submit disabled.
-- Added separate local and production configuration examples.
-- Removed private/example deployment identifiers and public IPs from tests and documentation.
-- Removed a redundant double zone-cursor write in incremental collection.
-- Made outbound HTTP User-Agent strings use the package version dynamically.
-- Added tests for secure `.env` permission modes.
-- Tightened remote reconciliation so a much later independent Spamhaus submission cannot be mistaken for an earlier ambiguous local POST.
-- Made per-IP READY selection prefer the newest evidence window so already-known newer evidence cannot be recycled after a cooldown.
-- Evaluated cooldown and new-evidence eligibility across all retained per-IP attempts so a later abandoned pre-send claim cannot mask an older submitted or remote cooldown.
-- Excluded remote-history-only rows from the local 24-hour POST-attempt cap.
-- Added validation that the configured remote reconciliation horizon cannot exceed Spamhaus' documented 30-day history window.
-- Added GitHub Actions CI, a security policy, and a substantially expanded deployment/operations README.
-- Documented the default `actions: [block]` collection semantics and added conservative/optional Cloudflare Custom Rule examples for generating relevant blocked Security Events.
+- Added optional AbuseIPDB API v2 reporting alongside Spamhaus.
+- Added `ABUSEIPDB_API_KEY` support and `abuseipdb.enabled` configuration.
+- Added conservative AbuseIPDB category mapping. The default mapping uses Web App Attack (`21`) for web reconnaissance and adds Hacking (`15`) only for the more explicit web-shell and traversal/LFI categories.
+- Added AbuseIPDB comments generated from the same directly observed Cloudflare evidence, sanitized to printable ASCII and bounded to the provider's 1024-byte limit.
+- Added independent AbuseIPDB idempotency state in SQLite with atomic claims, active-IP uniqueness, new-evidence checks, local cooldowns, crash recovery, rolling retention, and no automatic POST retry after ambiguous network failures.
+- Added explicit AbuseIPDB handling for HTTP `429`, including `Retry-After` / `X-RateLimit-Reset` backoff where available.
+- Added an independent local 24-hour AbuseIPDB POST-attempt cap.
+- Added read-only AbuseIPDB API authentication checking during `setup-check`. This does not create a report; reporting privilege is ultimately exercised by the first real REPORT request.
+- `submit --provider {all,spamhaus,abuseipdb}` can now preview or manually submit to a selected backend.
+- `attempts --provider {all,spamhaus,abuseipdb}` displays provider-specific rolling attempt state.
+- Scheduled `run --auto-submit` now submits independently to both enabled backends. Failure of one backend does not prevent the other backend from being attempted after a successful Cloudflare collection.
+- Health output now includes separate Spamhaus and AbuseIPDB attempt counts/states.
+- Added the `cloudflare-abuse-reporter` console alias while retaining the existing `spamhaus-reporter` command for backward compatibility.
+- Updated systemd metadata, production examples, installer guidance, README, security notes, and tests for the dual-backend model.
+- Added AbuseIPDB API client tests, comment/category tests, cooldown/rate-limit tests, and dual-backend configuration validation.
 
-## 1.1.0
+## 1.2.0 — Public production-hardened release
 
-- Replaced permanent per-IP submission ledger with bounded rolling attempt history.
-- Added configurable re-submission cooldown (24h default) without asserting it is a Spamhaus-guaranteed interval.
-- Added a new-evidence invariant so old Cloudflare events cannot be resubmitted after cooldown.
-- Added conservative `208` duplicate backoff and no-retry semantics for ambiguous POST outcomes.
-- Added recent-only Spamhaus history reconciliation with bounded pagination.
-- Added crash-state recovery: stale pre-send claims are retryable; stale sending states become ambiguous/`unknown`.
-- Added rolling event/attempt retention, WAL checkpointing, optional explicit compaction, and rotating logs.
-- Added high-volume arbitrary directory-enumeration detection; review-only by default.
-- Added strict configuration validation, process umask `077`, and owner-only runtime database/log permissions.
-- Added Cloudflare read-query retries and input/control-character sanitization.
-- Added local health checks and initial systemd templates.
+- Added the public GitHub-ready repository layout, CI, security documentation, and detailed production deployment instructions.
+- Moved the persistent process lock to `/var/lib/spamhaus-reporter/reporter.lock` so manual CLI and systemd oneshot invocations share a stable writable location.
+- Corrected `.env` permission checks so restricted `0640` root/service-group deployment is accepted.
+- Added explicit `setuptools>=68` installation for Python environments that do not bundle the build backend.
+- Hardened rolling duplicate prevention, remote Spamhaus reconciliation, evidence watermarks, crash recovery, retention, and systemd deployment.
+- Added Cloudflare Security Rule examples and clarified that a Cloudflare block is evidence input, not an automatic reporting decision.

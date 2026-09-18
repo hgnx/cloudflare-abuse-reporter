@@ -1,6 +1,6 @@
 [Unit]
-Description=Cloudflare Security Events to Spamhaus reporter
-Documentation=https://submit.spamhaus.org/api/
+Description=Cloudflare Security Events to Spamhaus and AbuseIPDB reporter
+Documentation=https://submit.spamhaus.org/api/ https://docs.abuseipdb.com/
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/etc/spamhaus-reporter/config.yaml

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Iterable
 
 from .classifier import Candidate, candidates_from_rows
+from .abuse_support import categories_for_candidate, make_comment
+from .abuseipdb import AbuseIPDBAmbiguousSubmissionError, AbuseIPDBClient, AbuseIPDBError
 from .cloudflare import CloudflareClient, CloudflareError
 from .config import ConfigError, Settings, get, load_settings
 from .db import Database, parse_ts
@@ -87,8 +89,31 @@ def _spamhaus(settings: Settings) -> SpamhausClient:
     )
 
 
+def _abuseipdb(settings: Settings) -> AbuseIPDBClient:
+    return AbuseIPDBClient(
+        api_key=settings.abuseipdb_api_key,
+        base_url=str(
+            get(
+                settings.raw,
+                "abuseipdb.base_url",
+                "https://api.abuseipdb.com/api/v2",
+            )
+        ),
+        timeout=int(get(settings.raw, "abuseipdb.request_timeout_seconds", 30)),
+        max_get_retries=int(get(settings.raw, "abuseipdb.max_get_retries", 3)),
+    )
+
+
+def _abuse_enabled(settings: Settings) -> bool:
+    return bool(get(settings.raw, "abuseipdb.enabled", False))
+
+
 def _cooldown(settings: Settings) -> float:
     return float(get(settings.raw, "spamhaus.resubmit_cooldown_hours", 24))
+
+
+def _abuse_cooldown(settings: Settings) -> float:
+    return float(get(settings.raw, "abuseipdb.resubmit_cooldown_hours", 24))
 
 
 def maintenance(settings: Settings, *, compact: bool = False) -> None:
@@ -99,6 +124,12 @@ def maintenance(settings: Settings, *, compact: bool = False) -> None:
         claimed_stale_minutes=int(get(settings.raw, "storage.claimed_stale_minutes", 30)),
         sending_stale_minutes=int(get(settings.raw, "storage.sending_stale_minutes", 30)),
         cooldown_hours=_cooldown(settings),
+        now=now,
+    )
+    abuse_recovered_claimed, abuse_recovered_sending = db.abuseipdb_recover_stale_attempts(
+        claimed_stale_minutes=int(get(settings.raw, "storage.claimed_stale_minutes", 30)),
+        sending_stale_minutes=int(get(settings.raw, "storage.sending_stale_minutes", 30)),
+        cooldown_hours=_abuse_cooldown(settings),
         now=now,
     )
     event_cutoff = now - timedelta(
@@ -113,19 +144,24 @@ def maintenance(settings: Settings, *, compact: bool = False) -> None:
     pruned_events = db.prune_events_before(event_cutoff.isoformat())
     pruned_attempts = db.prune_attempts_before(attempt_cutoff.isoformat())
     pruned_unknown = db.prune_unknown_before(unknown_cutoff.isoformat())
+    pruned_abuse_attempts = db.prune_abuseipdb_attempts_before(attempt_cutoff.isoformat())
+    pruned_abuse_unknown = db.prune_abuseipdb_unknown_before(unknown_cutoff.isoformat())
     db.maintenance_checkpoint()
     if compact:
         db.compact()
-    if any((backfilled, recovered_claimed, recovered_sending, pruned_events, pruned_attempts, pruned_unknown)):
+    if any((
+        backfilled, recovered_claimed, recovered_sending, abuse_recovered_claimed,
+        abuse_recovered_sending, pruned_events, pruned_attempts, pruned_unknown,
+        pruned_abuse_attempts, pruned_abuse_unknown,
+    )):
         LOG.info(
-            "maintenance backfilled_cooldowns=%d recovered_claimed=%d recovered_sending=%d "
-            "pruned_events=%d pruned_attempts=%d pruned_unknown=%d",
-            backfilled,
-            recovered_claimed,
-            recovered_sending,
-            pruned_events,
-            pruned_attempts,
-            pruned_unknown,
+            "maintenance backfilled_cooldowns=%d spamhaus_recovered_claimed=%d "
+            "spamhaus_recovered_sending=%d abuseipdb_recovered_claimed=%d "
+            "abuseipdb_recovered_sending=%d pruned_events=%d spamhaus_pruned_attempts=%d "
+            "spamhaus_pruned_unknown=%d abuseipdb_pruned_attempts=%d abuseipdb_pruned_unknown=%d",
+            backfilled, recovered_claimed, recovered_sending, abuse_recovered_claimed,
+            abuse_recovered_sending, pruned_events, pruned_attempts, pruned_unknown,
+            pruned_abuse_attempts, pruned_abuse_unknown,
         )
 
 
@@ -215,21 +251,32 @@ def print_candidates(settings: Settings, status: str | None = None) -> list[Cand
         return []
     now = datetime.now(timezone.utc)
     for c in candidates:
-        eligible, why = db.can_submit(
+        spamhaus_eligible, spamhaus_why = db.can_submit(
             client_ip=c.ip, evidence_last_at=c.last_seen.isoformat(), now=now
         )
-        latest = db.latest_attempt(c.ip)
-        state = latest["state"] if latest else "-"
+        spamhaus_latest = db.latest_attempt(c.ip)
+        spamhaus_state = spamhaus_latest["state"] if spamhaus_latest else "-"
+        if _abuse_enabled(settings):
+            abuse_eligible, abuse_why = db.abuseipdb_can_submit(
+                client_ip=c.ip, evidence_last_at=c.last_seen.isoformat(), now=now
+            )
+            abuse_latest = db.abuseipdb_latest_attempt(c.ip)
+            abuse_state = abuse_latest["state"] if abuse_latest else "-"
+        else:
+            abuse_eligible, abuse_why, abuse_state = False, "disabled", "-"
         print("-" * 100)
         print(
             f"{c.status:<6} IP={c.ip} zone={c.zone} host={c.host} confidence={c.confidence} "
-            f"requests={c.request_count} state={state} eligible={eligible}"
+            f"requests={c.request_count}"
+        )
+        print(
+            f"  Spamhaus: state={spamhaus_state} eligible={spamhaus_eligible} ({spamhaus_why}) | "
+            f"AbuseIPDB: state={abuse_state} eligible={abuse_eligible} ({abuse_why})"
         )
         print(
             f"  window: {c.first_seen.isoformat()} -> {c.last_seen.isoformat()} | "
             f"category: {c.primary_category}"
         )
-        print(f"  eligibility: {why}")
         print(
             f"  findings: {_fmt_list([f'{f.category}:{f.unique_count}' for f in c.findings], 10)}"
         )
@@ -443,6 +490,170 @@ def submit_ready(
     return posted
 
 
+def submit_abuseipdb_ready(settings: Settings, *, actually_send: bool) -> int:
+    if not _abuse_enabled(settings):
+        print("AbuseIPDB backend is disabled; nothing sent.")
+        return 0
+
+    db = _db(settings)
+    client = _abuseipdb(settings)
+    maintenance(settings)
+
+    allowed = set(get(settings.raw, "classification.auto_submit_categories", []) or [])
+    ready = _best_ready_per_ip(recent_candidates(settings), allowed)
+    category_map = get(settings.raw, "abuseipdb.category_map", {}) or {}
+
+    now = datetime.now(timezone.utc)
+    eligible: list[Candidate] = []
+    for c in ready:
+        ok, why = db.abuseipdb_can_submit(
+            client_ip=c.ip, evidence_last_at=c.last_seen.isoformat(), now=now
+        )
+        if ok:
+            eligible.append(c)
+        else:
+            LOG.info("AbuseIPDB %s skipped before claim: %s", c.ip, why)
+
+    if not eligible:
+        print("No eligible READY candidates for AbuseIPDB.")
+        return 0
+
+    if not actually_send:
+        print(f"DRY RUN (AbuseIPDB): {len(eligible)} eligible candidate(s).")
+        for c in eligible:
+            categories = categories_for_candidate(c, category_map)
+            comment = make_comment(c)
+            print(f"  {c.ip} | categories={','.join(map(str, categories))} | {c.primary_category} | {comment}")
+        return 0
+
+    cap = int(get(settings.raw, "abuseipdb.max_post_attempts_per_24h", 100))
+    day_start = now - timedelta(hours=24)
+    remaining = max(cap - db.abuseipdb_count_post_attempts_since(day_start.isoformat()), 0)
+    if remaining <= 0:
+        print(f"AbuseIPDB 24h local POST cap reached ({cap}). Nothing sent.")
+        return 0
+
+    cooldown_hours = _abuse_cooldown(settings)
+    rate_backoff = float(get(settings.raw, "abuseipdb.rate_limit_backoff_hours", 1))
+    error_backoff = float(get(settings.raw, "abuseipdb.definitive_error_backoff_hours", 24))
+
+    posted = 0
+    for c in eligible[:remaining]:
+        categories = categories_for_candidate(c, category_map)
+        comment = make_comment(c)
+        if len(comment.encode("utf-8")) > 1024:
+            LOG.error("%s skipped: generated AbuseIPDB comment exceeds 1024-byte cap", c.ip)
+            continue
+
+        token = db.abuseipdb_claim_ip(
+            client_ip=c.ip,
+            categories=categories,
+            comment=comment,
+            category=c.primary_category,
+            evidence_first_at=c.first_seen.isoformat(),
+            evidence_last_at=c.last_seen.isoformat(),
+        )
+        if token is None:
+            print(f"AbuseIPDB {c.ip}: skipped; no longer eligible or another process claimed it")
+            continue
+
+        # As with Spamhaus, persist the ambiguous boundary before issuing the
+        # one-and-only REPORT POST.
+        if not db.abuseipdb_mark_sending(token, cooldown_hours=cooldown_hours):
+            LOG.error("Could not transition AbuseIPDB claim %s for %s to sending; no POST issued", token, c.ip)
+            continue
+
+        try:
+            status_code, body, headers = client.submit_ip_once(
+                ip=c.ip,
+                categories=categories,
+                comment=comment,
+                timestamp=c.first_seen.astimezone(timezone.utc).isoformat(),
+            )
+        except AbuseIPDBAmbiguousSubmissionError as exc:
+            db.abuseipdb_finalize_submission(
+                claim_token=token,
+                state="unknown",
+                http_status=None,
+                response={"error": str(exc)},
+                cooldown_hours=cooldown_hours,
+            )
+            LOG.error(
+                "AbuseIPDB %s marked UNKNOWN; no automatic POST retry before cooldown: %s",
+                c.ip,
+                exc,
+            )
+            posted += 1
+            continue
+
+        effective = int(status_code)
+        response_record = {"body": body, "rate_headers": headers}
+        if effective == 200:
+            state = "submitted"
+            backoff = cooldown_hours
+            explicit_until = None
+        elif effective == 429:
+            state = "rate_limited"
+            backoff = rate_backoff
+            explicit_until = None
+            retry_after = headers.get("Retry-After") or headers.get("retry-after")
+            if retry_after:
+                try:
+                    seconds = max(float(retry_after), 0.0)
+                    explicit_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+                except ValueError:
+                    explicit_until = None
+            if explicit_until is None:
+                reset = headers.get("X-RateLimit-Reset") or headers.get("x-ratelimit-reset")
+                if reset:
+                    try:
+                        explicit_until = datetime.fromtimestamp(float(reset), tz=timezone.utc)
+                    except (ValueError, OSError, OverflowError):
+                        explicit_until = None
+            # Never shorten the configured per-IP cooldown merely because the
+            # provider returned a shorter Retry-After. The retry header can only
+            # extend our local safety window.
+            minimum_until = datetime.now(timezone.utc) + timedelta(
+                hours=max(rate_backoff, cooldown_hours)
+            )
+            if explicit_until is None or explicit_until < minimum_until:
+                explicit_until = minimum_until
+        elif effective in {400, 401, 402, 403, 404, 422}:
+            state = "failed_definitive"
+            backoff = error_backoff
+            explicit_until = None
+        else:
+            state = "unknown"
+            backoff = cooldown_hours
+            explicit_until = None
+
+        db.abuseipdb_finalize_submission(
+            claim_token=token,
+            state=state,
+            http_status=status_code,
+            response=response_record,
+            cooldown_hours=None if explicit_until is not None else backoff,
+            cooldown_until=explicit_until,
+        )
+        posted += 1
+        print(f"AbuseIPDB {c.ip}: {state} (HTTP {status_code})")
+
+        if effective in {401, 403, 404}:
+            raise AbuseIPDBError(
+                f"Systemic AbuseIPDB API error HTTP {effective}; batch stopped after {c.ip}"
+            )
+        if state == "failed_definitive":
+            LOG.error("Definitive AbuseIPDB rejection for %s: %s", c.ip, body)
+        elif state == "rate_limited":
+            LOG.warning("AbuseIPDB rate-limited %s; local backoff applied: %s", c.ip, headers)
+        elif state == "unknown":
+            LOG.error("Ambiguous AbuseIPDB response for %s; no immediate retry: %s", c.ip, body)
+
+    if len(eligible) > remaining:
+        print(f"AbuseIPDB skipped {len(eligible)-remaining} candidate(s) due to 24h POST cap.")
+    return posted
+
+
 def _warn_permissions(settings: Settings) -> None:
     env_path = settings.config_path.parent / ".env"
     if os.name == "nt" or not env_path.exists():
@@ -477,6 +688,15 @@ def setup_check(settings: Settings) -> None:
     print(f"Spamhaus: API key accepted; threat type {preferred!r} -> {resolved!r}")
     sync_remote(settings)
 
+    if _abuse_enabled(settings):
+        _abuseipdb(settings).check_auth()
+        print(
+            "AbuseIPDB: API key accepted by read-only CHECK endpoint; "
+            "REPORT privilege will be exercised only by a real submission."
+        )
+    else:
+        print("AbuseIPDB: disabled")
+
     cf = _cf(settings)
     now = datetime.now(timezone.utc)
     for z in settings.zones:
@@ -492,28 +712,49 @@ def setup_check(settings: Settings) -> None:
     maintenance(settings)
 
 
-def print_attempts(settings: Settings, limit: int) -> None:
-    rows = _db(settings).attempts(limit=limit)
-    if not rows:
+def print_attempts(settings: Settings, limit: int, provider: str = "all") -> None:
+    db = _db(settings)
+    any_rows = False
+    if provider in {"all", "spamhaus"}:
+        rows = db.attempts(limit=limit)
+        if rows:
+            any_rows = True
+            print("=== Spamhaus attempts ===")
+            for r in rows:
+                print(
+                    f"{r['claimed_at']} {r['client_ip']} {r['state']} {r['category']} "
+                    f"HTTP={r['http_status']} cooldown={r['cooldown_until'] or '-'} "
+                    f"id={r['spamhaus_submission_id'] or '-'}"
+                )
+                if r["reason"]:
+                    print(f"  {r['reason']}")
+    if provider in {"all", "abuseipdb"}:
+        rows = db.abuseipdb_attempts(limit=limit)
+        if rows:
+            any_rows = True
+            print("=== AbuseIPDB attempts ===")
+            for r in rows:
+                print(
+                    f"{r['claimed_at']} {r['client_ip']} {r['state']} {r['category']} "
+                    f"categories={r['categories']} HTTP={r['http_status']} "
+                    f"cooldown={r['cooldown_until'] or '-'}"
+                )
+                if r["comment"]:
+                    print(f"  {r['comment']}")
+    if not any_rows:
         print("Submission attempt history is empty.")
-        return
-    for r in rows:
-        print(
-            f"{r['claimed_at']} {r['client_ip']} {r['state']} {r['category']} "
-            f"HTTP={r['http_status']} cooldown={r['cooldown_until'] or '-'} "
-            f"id={r['spamhaus_submission_id'] or '-'}"
-        )
-        if r["reason"]:
-            print(f"  {r['reason']}")
-
 
 def health_check(settings: Settings) -> int:
     maintenance(settings)
     db = _db(settings)
     snap = db.health_snapshot()
     print(f"SQLite quick_check: {snap['quick_check']}")
-    print(f"DB size: {snap['db_bytes']} bytes | events={snap['event_count']} attempts={snap['attempt_count']}")
-    print(f"Attempt states: {snap['states']}")
+    print(
+        f"DB size: {snap['db_bytes']} bytes | events={snap['event_count']} "
+        f"spamhaus_attempts={snap['attempt_count']} abuseipdb_attempts={snap['abuseipdb_attempt_count']}"
+    )
+    print(f"Spamhaus attempt states: {snap['states']}")
+    print(f"AbuseIPDB attempt states: {snap['abuseipdb_states']}")
     if snap["quick_check"] != "ok":
         return 4
 
@@ -538,7 +779,7 @@ def health_check(settings: Settings) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Production-hardened rolling Cloudflare -> Spamhaus reporter"
+        description="Production-hardened rolling Cloudflare -> Spamhaus + AbuseIPDB reporter"
     )
     p.add_argument("--config", default="config.yaml")
     sub = p.add_subparsers(dest="command", required=True)
@@ -552,10 +793,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ready", action="store_true", required=True)
     s.add_argument("--yes", action="store_true")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument(
+        "--provider",
+        choices=["all", "spamhaus", "abuseipdb"],
+        default="all",
+        help="reporting backend(s) to preview/submit",
+    )
     run = sub.add_parser("run")
     run.add_argument("--auto-submit", action="store_true")
     hist = sub.add_parser("attempts")
     hist.add_argument("--limit", type=int, default=100)
+    hist.add_argument(
+        "--provider", choices=["all", "spamhaus", "abuseipdb"], default="all"
+    )
     maint = sub.add_parser("maintenance")
     maint.add_argument("--compact", action="store_true")
     sub.add_parser("health")
@@ -591,7 +841,24 @@ def main(argv: list[str] | None = None) -> int:
                 maintenance(settings)
             elif args.command == "submit":
                 actually = bool(args.yes and not args.dry_run)
-                submit_ready(settings, actually_send=actually, reconcile=True)
+                errors: list[str] = []
+                if args.provider in {"all", "spamhaus"}:
+                    try:
+                        submit_ready(settings, actually_send=actually, reconcile=True)
+                    except SpamhausError as exc:
+                        errors.append(f"Spamhaus: {exc}")
+                if args.provider in {"all", "abuseipdb"}:
+                    if _abuse_enabled(settings):
+                        try:
+                            submit_abuseipdb_ready(settings, actually_send=actually)
+                        except AbuseIPDBError as exc:
+                            errors.append(f"AbuseIPDB: {exc}")
+                    elif args.provider == "abuseipdb":
+                        errors.append("AbuseIPDB backend is disabled")
+                if errors:
+                    for msg in errors:
+                        print(f"ERROR: {msg}", file=sys.stderr)
+                    return 2
             elif args.command == "run":
                 _, _, failures = collect_incremental(settings)
                 print_candidates(settings)
@@ -608,10 +875,25 @@ def main(argv: list[str] | None = None) -> int:
                     if not enabled:
                         print("Auto-submit requested but disabled in config; nothing sent.")
                     else:
-                        submit_ready(settings, actually_send=True, reconcile=True)
+                        backend_errors: list[str] = []
+                        try:
+                            submit_ready(settings, actually_send=True, reconcile=True)
+                        except SpamhausError as exc:
+                            backend_errors.append(f"Spamhaus: {exc}")
+                            LOG.exception("Spamhaus auto-submit failed: %s", exc)
+                        if _abuse_enabled(settings):
+                            try:
+                                submit_abuseipdb_ready(settings, actually_send=True)
+                            except AbuseIPDBError as exc:
+                                backend_errors.append(f"AbuseIPDB: {exc}")
+                                LOG.exception("AbuseIPDB auto-submit failed: %s", exc)
+                        if backend_errors:
+                            for msg in backend_errors:
+                                print(f"ERROR: {msg}", file=sys.stderr)
+                            return 2
             elif args.command == "attempts":
                 maintenance(settings)
-                print_attempts(settings, args.limit)
+                print_attempts(settings, args.limit, args.provider)
             elif args.command == "maintenance":
                 maintenance(settings, compact=bool(args.compact))
             elif args.command == "health":
@@ -621,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
         ConfigError,
         CloudflareError,
         SpamhausError,
+        AbuseIPDBError,
         AlreadyRunningError,
         ValueError,
         OSError,

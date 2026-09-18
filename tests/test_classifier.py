@@ -102,3 +102,11 @@ def test_high_volume_unknown_directory_enumeration_is_ready_review_class():
     assert c.status == "READY"
     assert c.primary_category == "directory_enum"
     assert len(c.reason) <= 255
+
+
+def test_additional_common_recon_paths_are_classified():
+    from spamhaus_reporter.classifier import classify_path
+    assert "secrets_config" in classify_path("/.ssh/id_rsa")
+    assert "api_debug" in classify_path("/server-info")
+    assert "api_debug" in classify_path("/phpinfo.php")
+    assert "api_debug" in classify_path("/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php")

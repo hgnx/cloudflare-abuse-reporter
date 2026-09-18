@@ -12,6 +12,7 @@ def settings_for(tmp_path):
         raw={},
         zones=[],
         spamhaus_api_key="x",
+        abuseipdb_api_key="z",
         cloudflare_api_token="y",
         config_path=config,
     )

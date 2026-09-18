@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Hardened production installer for a Debian/Ubuntu-style systemd host.
-# It intentionally does NOT enable auto-submit and does NOT start the timer.
+# It intentionally does NOT change an existing auto-submit policy and does NOT start the timer.
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "ERROR: run this installer as root (for example: sudo ./deploy/install.sh)" >&2
@@ -151,16 +151,17 @@ systemd-analyze verify \
 
 cat <<EOF
 
-Installed spamhaus-reporter $VERSION.
+Installed cloudflare-spamhaus-reporter $VERSION.
 
 The timer was NOT enabled and no report was submitted.
 $([[ "$EXISTING_TIMER_DISABLED" -eq 1 ]] && echo "An existing timer was disabled for safety and must be re-enabled after validation." || true)
 
 Next steps:
-  1. Edit secrets:
+  1. Edit secrets (Spamhaus, Cloudflare, and optional AbuseIPDB):
        sudoedit $CONFIG_DIR/.env
-  2. Edit zones and review thresholds:
+  2. Edit zones, review thresholds, and provider settings:
        sudoedit $CONFIG_DIR/config.yaml
+     To enable AbuseIPDB, add ABUSEIPDB_API_KEY and set abuseipdb.enabled: true.
   3. Keep classification.auto_submit_enabled: false initially.
   4. Validate:
        sudo -u $SERVICE_USER $CURRENT_LINK/.venv/bin/spamhaus-reporter --config $CONFIG_DIR/config.yaml setup-check

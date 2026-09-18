@@ -1,4 +1,4 @@
-# Production configuration example for deploy/systemd/spamhaus-reporter.service
+# Production configuration example (Spamhaus + optional AbuseIPDB) for deploy/systemd/spamhaus-reporter.service
 # Copy to /etc/spamhaus-reporter/config.yaml and replace all placeholders.
 
 zones:
@@ -36,6 +36,39 @@ spamhaus:
   remote_history_page_items: 1000
   remote_history_max_pages: 100
   max_post_attempts_per_24h: 25
+
+
+abuseipdb:
+  # Optional second reporting backend. Set to true only after adding
+  # ABUSEIPDB_API_KEY to .env and validating in shadow mode.
+  enabled: false
+  base_url: https://api.abuseipdb.com/api/v2
+  request_timeout_seconds: 30
+  max_get_retries: 3
+
+  # Conservative local policy. AbuseIPDB enforces a 15-minute same-IP minimum,
+  # but this project defaults to one report per IP per 24 hours and requires new
+  # evidence before another attempt.
+  resubmit_cooldown_hours: 24
+  rate_limit_backoff_hours: 1
+  definitive_error_backoff_hours: 24
+  max_post_attempts_per_24h: 100
+
+  # AbuseIPDB report category IDs. 21=Web App Attack, 15=Hacking.
+  # The defaults avoid category inflation; edit only when your evidence supports it.
+  category_map:
+    wordpress: [21]
+    secrets_config: [21]
+    source_control: [21]
+    db_admin: [21]
+    backup_dump: [21]
+    cloud_credentials: [21]
+    api_debug: [21]
+    webshell: [15, 21]
+    traversal_lfi: [15, 21]
+    admin_login: [21]
+    generic_scan: [21]
+    directory_enum: [21]
 
 classification:
   aggregation_window_minutes: 10

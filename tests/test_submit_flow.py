@@ -58,7 +58,7 @@ def test_208_is_stored_and_not_posted_again_immediately(tmp_path, monkeypatch):
             "sending_stale_minutes": 30,
         },
     }
-    settings = Settings(raw=raw, zones=[], spamhaus_api_key="x", cloudflare_api_token="y", config_path=tmp_path / "config.yaml")
+    settings = Settings(raw=raw, zones=[], spamhaus_api_key="x", abuseipdb_api_key="z", cloudflare_api_token="y", config_path=tmp_path / "config.yaml")
     fake = FakeSpamhaus()
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(cli, "_spamhaus", lambda _settings: fake)

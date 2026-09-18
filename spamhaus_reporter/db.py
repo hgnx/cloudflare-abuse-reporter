@@ -65,6 +65,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_attempt_active_ip
     ON submission_attempts(client_ip)
     WHERE state IN ('claimed','sending');
 
+CREATE TABLE IF NOT EXISTS abuseipdb_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_token TEXT NOT NULL UNIQUE,
+    client_ip TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN (
+        'claimed','sending','submitted','rate_limited',
+        'unknown','failed_definitive','abandoned_pre_send'
+    )),
+    categories TEXT NOT NULL DEFAULT '',
+    comment TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    evidence_first_at TEXT,
+    evidence_last_at TEXT,
+    claimed_at TEXT NOT NULL,
+    sending_at TEXT,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL,
+    cooldown_until TEXT,
+    http_status INTEGER,
+    response_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_abuse_attempts_ip_claimed ON abuseipdb_attempts(client_ip, claimed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_abuse_attempts_sending ON abuseipdb_attempts(sending_at);
+CREATE INDEX IF NOT EXISTS idx_abuse_attempts_state_updated ON abuseipdb_attempts(state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_abuse_attempt_active_ip
+    ON abuseipdb_attempts(client_ip)
+    WHERE state IN ('claimed','sending');
+
 CREATE TABLE IF NOT EXISTS zone_cursors (
     zone TEXT PRIMARY KEY,
     last_success_at TEXT NOT NULL,
@@ -723,6 +751,235 @@ class Database:
             )
             return int(cur.rowcount)
 
+    # ---------- AbuseIPDB rolling submission state ----------
+
+    def abuseipdb_latest_attempt(self, client_ip: str) -> sqlite3.Row | None:
+        with self.connect() as con:
+            return con.execute(
+                """
+                SELECT * FROM abuseipdb_attempts
+                WHERE client_ip=?
+                ORDER BY claimed_at DESC, id DESC LIMIT 1
+                """,
+                (client_ip,),
+            ).fetchone()
+
+    def abuseipdb_can_submit(
+        self,
+        *,
+        client_ip: str,
+        evidence_last_at: str,
+        now: datetime | None = None,
+    ) -> tuple[bool, str]:
+        now = (now or utcnow()).astimezone(timezone.utc)
+        evidence_last = parse_ts(evidence_last_at)
+        if evidence_last is None:
+            return False, "invalid evidence timestamp"
+        with self.connect() as con:
+            rows = list(
+                con.execute(
+                    """
+                    SELECT state, cooldown_until, evidence_last_at
+                    FROM abuseipdb_attempts
+                    WHERE client_ip=?
+                    ORDER BY claimed_at DESC, id DESC
+                    """,
+                    (client_ip,),
+                )
+            )
+        return self._eligibility_from_attempts(rows, evidence_last=evidence_last, now=now)
+
+    def abuseipdb_claim_ip(
+        self,
+        *,
+        client_ip: str,
+        categories: list[int],
+        comment: str,
+        category: str,
+        evidence_first_at: str,
+        evidence_last_at: str,
+        now: datetime | None = None,
+    ) -> str | None:
+        now = (now or utcnow()).astimezone(timezone.utc)
+        evidence_last = parse_ts(evidence_last_at)
+        if evidence_last is None:
+            raise ValueError("Invalid evidence_last_at")
+        categories_text = ",".join(str(x) for x in sorted(set(int(v) for v in categories)))
+
+        with self.immediate() as con:
+            rows = list(
+                con.execute(
+                    """
+                    SELECT state, cooldown_until, evidence_last_at
+                    FROM abuseipdb_attempts
+                    WHERE client_ip=?
+                    ORDER BY claimed_at DESC, id DESC
+                    """,
+                    (client_ip,),
+                )
+            )
+            eligible, _ = self._eligibility_from_attempts(
+                rows, evidence_last=evidence_last, now=now
+            )
+            if not eligible:
+                return None
+
+            token = uuid.uuid4().hex
+            try:
+                con.execute(
+                    """
+                    INSERT INTO abuseipdb_attempts(
+                        claim_token, client_ip, state, categories, comment, category,
+                        evidence_first_at, evidence_last_at, claimed_at, updated_at
+                    ) VALUES (?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        token, client_ip, categories_text, comment, category,
+                        evidence_first_at, evidence_last_at, now.isoformat(), now.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return None
+            return token
+
+    def abuseipdb_mark_sending(
+        self,
+        claim_token: str,
+        *,
+        cooldown_hours: float,
+        now: datetime | None = None,
+    ) -> bool:
+        now = (now or utcnow()).astimezone(timezone.utc)
+        cooldown_until = now + timedelta(hours=float(cooldown_hours))
+        with self.immediate() as con:
+            cur = con.execute(
+                """
+                UPDATE abuseipdb_attempts
+                SET state='sending', sending_at=?, updated_at=?, cooldown_until=?
+                WHERE claim_token=? AND state='claimed'
+                """,
+                (now.isoformat(), now.isoformat(), cooldown_until.isoformat(), claim_token),
+            )
+            return cur.rowcount == 1
+
+    def abuseipdb_finalize_submission(
+        self,
+        *,
+        claim_token: str,
+        state: str,
+        http_status: int | None,
+        response: object,
+        cooldown_hours: float | None = None,
+        cooldown_until: datetime | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        if state not in {
+            "submitted", "rate_limited", "unknown", "failed_definitive", "abandoned_pre_send",
+        }:
+            raise ValueError(f"Invalid AbuseIPDB final state: {state}")
+        now = (now or utcnow()).astimezone(timezone.utc)
+        until_iso = cooldown_until.astimezone(timezone.utc).isoformat() if cooldown_until else None
+        if until_iso is None and cooldown_hours is not None and cooldown_hours > 0:
+            until_iso = (now + timedelta(hours=float(cooldown_hours))).isoformat()
+        payload = json.dumps(response, ensure_ascii=False, sort_keys=True)[:40000]
+        with self.immediate() as con:
+            cur = con.execute(
+                """
+                UPDATE abuseipdb_attempts
+                SET state=?, finished_at=?, updated_at=?, cooldown_until=COALESCE(?, cooldown_until),
+                    http_status=?, response_json=?
+                WHERE claim_token=?
+                """,
+                (
+                    state, now.isoformat(), now.isoformat(), until_iso,
+                    http_status, payload, claim_token,
+                ),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(f"No AbuseIPDB attempt for claim token {claim_token}")
+
+    def abuseipdb_recover_stale_attempts(
+        self,
+        *,
+        claimed_stale_minutes: int,
+        sending_stale_minutes: int,
+        cooldown_hours: float,
+        now: datetime | None = None,
+    ) -> tuple[int, int]:
+        now = (now or utcnow()).astimezone(timezone.utc)
+        claimed_cutoff = now - timedelta(minutes=claimed_stale_minutes)
+        sending_cutoff = now - timedelta(minutes=sending_stale_minutes)
+        recovered_claimed = 0
+        recovered_sending = 0
+        with self.immediate() as con:
+            cur = con.execute(
+                """
+                UPDATE abuseipdb_attempts
+                SET state='abandoned_pre_send', finished_at=?, updated_at=?
+                WHERE state='claimed' AND claimed_at < ?
+                """,
+                (now.isoformat(), now.isoformat(), claimed_cutoff.isoformat()),
+            )
+            recovered_claimed = int(cur.rowcount)
+
+            rows = con.execute(
+                """
+                SELECT id, sending_at, claimed_at FROM abuseipdb_attempts
+                WHERE state='sending' AND COALESCE(sending_at, claimed_at) < ?
+                """,
+                (sending_cutoff.isoformat(),),
+            ).fetchall()
+            for r in rows:
+                base = parse_ts(r["sending_at"] or r["claimed_at"]) or now
+                until = base + timedelta(hours=float(cooldown_hours))
+                con.execute(
+                    """
+                    UPDATE abuseipdb_attempts
+                    SET state='unknown', finished_at=?, updated_at=?, cooldown_until=?
+                    WHERE id=? AND state='sending'
+                    """,
+                    (now.isoformat(), now.isoformat(), until.isoformat(), r["id"]),
+                )
+                recovered_sending += 1
+        return recovered_claimed, recovered_sending
+
+    def abuseipdb_count_post_attempts_since(self, since_iso: str) -> int:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS n FROM abuseipdb_attempts WHERE sending_at >= ?",
+                (since_iso,),
+            ).fetchone()
+            return int(row["n"] if row else 0)
+
+    def abuseipdb_attempts(self, limit: int = 100) -> list[sqlite3.Row]:
+        with self.connect() as con:
+            return list(
+                con.execute(
+                    "SELECT * FROM abuseipdb_attempts ORDER BY claimed_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                )
+            )
+
+    def prune_abuseipdb_attempts_before(self, before_iso: str) -> int:
+        with self.immediate() as con:
+            cur = con.execute(
+                """
+                DELETE FROM abuseipdb_attempts
+                WHERE claimed_at < ?
+                  AND state IN ('submitted','rate_limited','failed_definitive','abandoned_pre_send')
+                """,
+                (before_iso,),
+            )
+            return int(cur.rowcount)
+
+    def prune_abuseipdb_unknown_before(self, before_iso: str) -> int:
+        with self.immediate() as con:
+            cur = con.execute(
+                "DELETE FROM abuseipdb_attempts WHERE state='unknown' AND claimed_at < ?",
+                (before_iso,),
+            )
+            return int(cur.rowcount)
+
     def maintenance_checkpoint(self) -> None:
         with self.connect() as con:
             # Bound WAL growth. Database free pages are reused on future inserts,
@@ -738,10 +995,17 @@ class Database:
             quick = str(con.execute("PRAGMA quick_check").fetchone()[0])
             event_count = int(con.execute("SELECT COUNT(*) FROM events").fetchone()[0])
             attempt_count = int(con.execute("SELECT COUNT(*) FROM submission_attempts").fetchone()[0])
+            abuse_attempt_count = int(con.execute("SELECT COUNT(*) FROM abuseipdb_attempts").fetchone()[0])
             states = {
                 str(r["state"]): int(r["n"])
                 for r in con.execute(
                     "SELECT state, COUNT(*) AS n FROM submission_attempts GROUP BY state"
+                ).fetchall()
+            }
+            abuse_states = {
+                str(r["state"]): int(r["n"])
+                for r in con.execute(
+                    "SELECT state, COUNT(*) AS n FROM abuseipdb_attempts GROUP BY state"
                 ).fetchall()
             }
             cursors = {
@@ -752,7 +1016,9 @@ class Database:
             "quick_check": quick,
             "event_count": event_count,
             "attempt_count": attempt_count,
+            "abuseipdb_attempt_count": abuse_attempt_count,
             "states": states,
+            "abuseipdb_states": abuse_states,
             "cursors": cursors,
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
         }

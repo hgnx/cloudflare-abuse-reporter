@@ -26,6 +26,7 @@ class Settings:
     raw: dict[str, Any]
     zones: list[ZoneConfig]
     spamhaus_api_key: str
+    abuseipdb_api_key: str
     cloudflare_api_token: str
     config_path: Path
 
@@ -98,11 +99,18 @@ def load_settings(config_path: str | Path = "config.yaml") -> Settings:
         raise ConfigError("At least one zone must be configured")
 
     spamhaus_key = os.getenv("SPAMHAUS_API_KEY", "").strip()
+    abuseipdb_key = os.getenv("ABUSEIPDB_API_KEY", "").strip()
     cf_token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
     if not spamhaus_key or spamhaus_key.lower() == "replace_me":
         raise ConfigError("SPAMHAUS_API_KEY is missing from environment/.env")
     if not cf_token or cf_token.lower() == "replace_me":
         raise ConfigError("CLOUDFLARE_API_TOKEN is missing from environment/.env")
+
+    abuse_enabled = get(raw, "abuseipdb.enabled", False)
+    if not isinstance(abuse_enabled, bool):
+        raise ConfigError("abuseipdb.enabled must be true or false, not a string")
+    if abuse_enabled and (not abuseipdb_key or abuseipdb_key.lower() == "replace_me"):
+        raise ConfigError("ABUSEIPDB_API_KEY is missing from environment/.env while abuseipdb.enabled is true")
 
     _positive_int(raw, "cloudflare.poll_minutes", 10)
     _positive_int(raw, "cloudflare.overlap_minutes", 3)
@@ -136,6 +144,29 @@ def load_settings(config_path: str | Path = "config.yaml") -> Settings:
     _positive_int(raw, "spamhaus.request_timeout_seconds", 30)
     _positive_int(raw, "spamhaus.max_get_retries", 3)
 
+    abuse_cooldown = _positive_float(raw, "abuseipdb.resubmit_cooldown_hours", 24)
+    if abuse_cooldown * 60 < 15:
+        raise ConfigError("abuseipdb.resubmit_cooldown_hours must be at least 0.25 (15 minutes)")
+    _positive_float(raw, "abuseipdb.rate_limit_backoff_hours", 1)
+    _positive_float(raw, "abuseipdb.definitive_error_backoff_hours", 24)
+    _positive_int(raw, "abuseipdb.max_post_attempts_per_24h", 100)
+    _positive_int(raw, "abuseipdb.request_timeout_seconds", 30)
+    _positive_int(raw, "abuseipdb.max_get_retries", 3)
+
+    category_map = get(raw, "abuseipdb.category_map", {}) or {}
+    if not isinstance(category_map, dict):
+        raise ConfigError("abuseipdb.category_map must be a mapping")
+    for category, ids in category_map.items():
+        if not isinstance(ids, list) or not ids:
+            raise ConfigError(f"abuseipdb.category_map.{category} must be a non-empty list")
+        for cid in ids:
+            try:
+                value = int(cid)
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"Invalid AbuseIPDB category ID {cid!r} for {category}") from exc
+            if value < 1 or value > 23:
+                raise ConfigError(f"AbuseIPDB category ID must be between 1 and 23: {value}")
+
     event_retention = _positive_int(raw, "storage.event_retention_hours", 36)
     attempts_retention = _positive_int(raw, "storage.submission_attempt_retention_hours", 72)
     unknown_retention = _positive_int(raw, "storage.unknown_attempt_retention_hours", 72)
@@ -146,12 +177,14 @@ def load_settings(config_path: str | Path = "config.yaml") -> Settings:
 
     if event_retention < horizon:
         raise ConfigError("storage.event_retention_hours must be >= classification.review_horizon_hours")
-    if attempts_retention < max(24.0, cooldown, duplicate_backoff, error_backoff):
+    abuse_rate_backoff = float(get(raw, "abuseipdb.rate_limit_backoff_hours", 1))
+    abuse_error_backoff = float(get(raw, "abuseipdb.definitive_error_backoff_hours", 24))
+    if attempts_retention < max(24.0, cooldown, duplicate_backoff, error_backoff, abuse_cooldown, abuse_rate_backoff, abuse_error_backoff):
         raise ConfigError(
-            "storage.submission_attempt_retention_hours must be >= the largest Spamhaus cooldown/backoff"
+            "storage.submission_attempt_retention_hours must be >= the largest provider cooldown/backoff"
         )
-    if unknown_retention < cooldown:
-        raise ConfigError("storage.unknown_attempt_retention_hours must be >= spamhaus.resubmit_cooldown_hours")
+    if unknown_retention < max(cooldown, abuse_cooldown):
+        raise ConfigError("storage.unknown_attempt_retention_hours must be >= the largest provider resubmit cooldown")
     if remote_horizon < cooldown:
         raise ConfigError("spamhaus.remote_reconcile_horizon_hours must be >= resubmit_cooldown_hours")
 
@@ -213,11 +246,15 @@ def load_settings(config_path: str | Path = "config.yaml") -> Settings:
     unknown_categories = sorted({str(x) for x in categories} - known_categories)
     if unknown_categories:
         raise ConfigError(f"Unknown auto-submit categories: {', '.join(unknown_categories)}")
+    unknown_abuse_map = sorted({str(x) for x in category_map} - known_categories)
+    if unknown_abuse_map:
+        raise ConfigError(f"Unknown abuseipdb.category_map categories: {', '.join(unknown_abuse_map)}")
 
     return Settings(
         raw=raw,
         zones=zones,
         spamhaus_api_key=spamhaus_key,
+        abuseipdb_api_key=abuseipdb_key,
         cloudflare_api_token=cf_token,
         config_path=config_path,
     )
